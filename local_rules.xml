@@ -1,0 +1,20 @@
+<group name="local,sshd,authentication_failures,">
+  <rule id="100002" level="10" frequency="5" timeframe="60">
+    <if_matched_sid>5760</if_matched_sid>
+    <same_source_ip />
+    <description>SSH Brute-Force: 5 nieudanych prob logowania z tego samego IP w ciagu 60 sekund.</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+  </rule>
+</group>
+<group name="windows, sysmon, mimikatz,">
+  <rule id="100005" level="12">
+    <if_matched_sid>92213</if_matched_sid>
+    <match>mimikatz</match>
+    <description>Znaleziono narzedzie Mimikatz (Credential Dumping) na stacji Windows!</description>
+    <mitre>
+      <id>T1003</id>
+    </mitre>
+  </rule>
+</group>
