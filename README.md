@@ -50,6 +50,9 @@ graph TD
 ### 1. Centralny Serwer Wazuh (`192.168.0.136`)
 Wdrożono architekturę *All-in-One* obejmującą silnik analityczny (Manager), bazę opartą na OpenSearch (Indexer) oraz interfejs wizualizacyjny (Dashboard). Przeprowadzono twardą konfigurację uprawnień RBAC oraz synchronizację certyfikatów i magazynów kluczy (szczegóły w sekcji *Troubleshooting*).
 
+<img width="1854" height="964" alt="obraz" src="https://github.com/user-attachments/assets/52e2d62a-d094-4cbc-80d5-6dd9b6d95503" />
+
+
 ### 2. Konfiguracja Agenta Linux (`192.168.0.17`)
 * Zainstalowano i zarejestrowano Agenta Wazuh (`v4.14.9`) z wymuszeniem komunikacji po protokole IPv4.
 * Skonfigurowano zbieranie zdarzeń uwierzytelniania bezpośrednio z podsystemu `journald`, nadając procesowi agenta odpowiednie uprawnienia grupowe (`systemd-journal`).
@@ -137,6 +140,9 @@ Na maszynie Windows 10 (`192.168.0.224`), po celowym wyłączeniu ochrony antywi
 
 ### 2. Przechwycenie Telemetrii przez Sysmon
 Dzięki integracji z kanałem `Microsoft-Windows-Sysmon/Operational`, aktywność została natychmiast wyłapana już na etapie dostarczenia pliku (*Delivery*) oraz inicjalizacji procesu, zanim atakujący zdołał przeprowadzić pełny zrzut pamięci.
+
+<img width="1854" height="964" alt="obraz" src="https://github.com/user-attachments/assets/e8127bc6-eb61-48fb-b65b-8b8628ae3ebc" />
+
 
 ### 3. Rozwój Scenariusza (W trakcie wdrożenia — *Work in Progress*)
 Aktualnie prowadzone są prace końcowe nad domknięciem pętli SOAR dla stacji roboczych Windows:
