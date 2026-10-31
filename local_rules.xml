@@ -10,9 +10,8 @@
 </group>
 <group name="windows, sysmon, mimikatz,">
   <rule id="100005" level="12">
-    <if_matched_sid>92213</if_matched_sid>
-    <match>mimikatz</match>
-    <description>Znaleziono narzedzie Mimikatz (Credential Dumping) na stacji Windows!</description>
+    <if_sid>92213, 92203</if_sid>
+    <description>Wykryto zlosliwa aktywnosc Powershell / tworzenie podejrzanego pliku (Mozliwy atak Credential Dumping)</description>
     <mitre>
       <id>T1003</id>
     </mitre>
