@@ -80,14 +80,14 @@ Z maszyny atakującej (`192.168.0.52`) przeprowadzono słownikowy atak siłowy (
 * **Atakowane konto:** `polafasola2`
 * **Artefakty w logach:** Zmasowane generowanie wpisów o nieudanym uwierzytelnianiu w dzienniku `journald` dla demona `sshd`.
 
-### 2. Inżynieria Detekcji (Custom Rule `100002`)
+### 2. Inżynieria Detekcji (Custom Rule `02`)
 W pliku `/var/ossec/etc/rules/local_rules.xml` na serwerze Managera zaprojektowano regułę korelacyjną agregującą pojedyncze nieudane logowania (wbudowana reguła `5760` – *sshd: authentication failed*).
 
-<img width="1858" height="352" alt="Konfiguracja reguły 100002 w local_rules.xml" src="https://github.com/user-attachments/assets/96efd797-b73b-4746-be3b-0ac04a982b67" />
+<img width="1858" height="352" alt="Konfiguracja reguły 02 w local_rules.xml" src="https://github.com/user-attachments/assets/96efd797-b73b-4746-be3b-0ac04a982b67" />
 
 ```xml
 <group name="local,syslog,sshd,">
-  <rule id="100002" level="10" frequency="5" timeframe="60">
+  <rule id="02" level="10" frequency="5" timeframe="60">
     <if_matched_sid>5760</if_matched_sid>
     <same_source_ip />
     <description>SSH Brute Force wykryty: 5 nieudanych logowan w ciagu minuty z IP $(srcip)</description>
@@ -116,7 +116,7 @@ W momencie wyzwolenia reguły `100002` Manager wysyła rozkaz bezpośrednio do a
 ### 4. Weryfikacja i Dowody Działania (PoC)
 
 **Krok A: Wykrycie ataku i korelacja zdarzeń w Wazuh Dashboard**  
-System poprawnie zarejestrował pojedyncze próby logowania (reguła `5760`, poziom 5) oraz wygenerował skorelowany alert wysokiego ryzyka (reguła `100002`, poziom 10) wskazujący na atak Brute-Force na konto `polafasola2`.
+System poprawnie zarejestrował pojedyncze próby logowania (reguła `5760`, poziom 5) oraz wygenerował skorelowany alert wysokiego ryzyka (reguła `100002`, poziom 10 (wcześniej 5763) wskazujący na atak Brute-Force na konto `polafasola2`.
 
 <img width="1854" height="962" alt="Wykrycie ataku Brute Force w Wazuh Dashboard - widok ogólny" src="https://github.com/user-attachments/assets/4536d79e-aa86-4f7f-8a6d-45883c69c8fd" />
 <img width="1858" height="965" alt="Szczegóły alertu 100002 i zdarzeń 5760 w Wazuh Dashboard" src="https://github.com/user-attachments/assets/408753ce-c30e-4511-9843-df40058fc303" />
