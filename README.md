@@ -32,7 +32,7 @@ graph TD
     LinuxTarget -->|"Telemetria (Port 1514/1515)"| WazuhSIEM
     WinTarget -->|"Telemetria Sysmon (Port 1514/1515)"| WazuhSIEM
     WazuhSIEM -.->|"Active Response: firewall-drop (iptables)"| LinuxTarget
-    WazuhSIEM -.->|"Active Response: kill-mimi.cmd (Taskkill + Cleanup)"| WinTarget
+    WazuhSIEM -.->|"Active Response: quarantine-mimi.cmd (Taskkill + Quarantine)"| WinTarget
 ```
 
 ### Specyfikacja komponentów:
@@ -50,13 +50,11 @@ graph TD
 W repozytorium znajdują się kluczowe pliki konfiguracyjne oraz skrypty wykorzystane podczas wdrożenia:
 ```text
 ├── README.md                                  # Dokumentacja techniczna i raport z wdrożenia
-├── configs/
-│   ├── local_rules.xml                        # Autorskie reguły detekcyjne (ID 100002, ID 100005)
-│   ├── manager_active_response.conf           # Konfiguracja bloków <command> i <active-response> Managera
-│   ├── linux_agent_ossec.conf                 # Konfiguracja zbierania logów journald na hoście Linux
-│   └── windows_agent_sysmon.conf              # Konfiguracja integracji z kanałem Sysmon Operational
-└── scripts/
-    └── kill-mimi.cmd                          # Skrypt Active Response dla systemu Windows (mitygacja EDR)
+├── local_rules.xml                            # Autorskie reguły detekcyjne (ID 100002, ID 100005)
+├── manager-active-response.conf               # Konfiguracja bloków <command> i <active-response> Managera
+├── windows_agent_sysmon.conf                  # Konfiguracja integracji z kanałem Sysmon Operational
+├── quarantine-mimi.py                         # Skrypt kwarantanny artefaktów Mimikatz
+└── quarantine-mimi.cmd                        # Launcher Active Response dla Windows
 ```
 
 ---
@@ -179,41 +177,35 @@ Ponieważ zdarzenia Sysmon (Event ID 1 / Event ID 11) mają charakter lokalny (h
 
 Zamiast blokady sieciowej zaprojektowano mechanizm bezpośredniej neutralizacji zagrożenia na poziomie systemu operacyjnego (EDR Remediation):
 
-**A. Skrypt wykonawczy na stacji Windows (`C:\Program Files (x86)\ossec-agent\active-response\bin\kill-mimi.cmd`):**
-Skrypt wymusza natychmiastowe zakończenie procesu `mimikatz.exe` za pomocą narzędzia `taskkill`, a następnie przy użyciu wywołania PowerShell rekurencyjnie usuwa katalog roboczy narzędzia i zapisuje ślad audytowy w `active-responses.log`:
+**A. Skrypt wykonawczy na stacji Windows (`C:\Program Files (x86)\ossec-agent\active-response\bin\quarantine-mimi.py`):**
+Skrypt czyta alert Active Response ze standardowego wejścia, wymusza zakończenie procesu Mimikatz za pomocą `taskkill`, przenosi wskazany plik do `C:\Quarantine` zamiast go usuwać, nadaje mu rozszerzenie `.locked`, oblicza SHA-256 i zapisuje ślad audytowy w `active-responses.log`. Plik `quarantine-mimi.cmd` uruchamia skrypt Python, ponieważ agent Windows wykonuje skrypty Active Response przez pliki wykonywalne lub launchery batch:
 
-```bat
+```cmd
 @echo off
-setlocal enableDelayedExpansion
-
-:: Ubicie zlosliwego procesu Mimikatz (wraz z procesami potomnymi)
-taskkill /F /IM mimikatz.exe /T >nul 2>&1
-
-:: Usuniecie plikow narzedzia z katalogu Pobrane / Temp przy uzyciu PowerShell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path 'C:\Users\*\Downloads\*mimikatz*', 'C:\Temp\*mimikatz*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
-
-:: Zapisanie potwierdzenia wykonania akcji w logach agenta
-echo %date% %time% Active Response [win_kill_mimi]: Zneutralizowano proces i usunieto pliki Mimikatz (Rule 100005) >> "C:\Program Files (x86)\ossec-agent\active-response\active-responses.log"
-
-exit /b 0
+setlocal
+set "SCRIPT_DIR=%~dp0"
+if defined WAZUH_PYTHON set "PYTHON=%WAZUH_PYTHON%"
+if not defined PYTHON set "PYTHON=py.exe"
+"%PYTHON%" "%SCRIPT_DIR%quarantine-mimi.py"
+exit /b %ERRORLEVEL%
 ```
 
 **B. Konfiguracja wyzwalacza na serwerze Wazuh Manager (`/var/ossec/etc/ossec.conf`):**
 ```xml
 <command>
-  <name>win_kill_mimi</name>
-  <executable>kill-mimi.cmd</executable>
+  <name>quarantine_mimi</name>
+  <executable>quarantine-mimi.cmd</executable>
   <timeout_allowed>no</timeout_allowed>
 </command>
 
 <active-response>
   <disabled>no</disabled>
-  <command>win_kill_mimi</command>
+  <command>quarantine_mimi</command>
   <location>local</location>
   <rules_id>100005</rules_id>
 </active-response>
 ```
-Po wykryciu reguły `100005` Wazuh Manager natychmiast wysyła komendę `win_kill_mimi` do agenta Windows (`<location>local</location>`), który w ułamku sekundy ubija proces i czyści dysk ze złośliwego oprogramowania.
+Po wykryciu reguły `100005` Wazuh Manager natychmiast wysyła komendę `quarantine_mimi` do agenta Windows (`<location>local</location>`), który zatrzymuje proces i zabezpiecza plik w kwarantannie bez usuwania dowodu.
 
 ---
 
@@ -250,9 +242,9 @@ Podczas budowy infrastruktury od zera rozwiązano szereg problemów administracy
 ### 5. Brak działania wbudowanych skryptów sieciowych Active Response na Windowsie (`Cannot read 'srcip' from data`)
 * **Diagnoza:** Pierwsza iteracja Active Response dla stacji Windows zakładała użycie domyślnego skryptu `netsh.exe` w celu odcięcia ruchu sieciowego po wykryciu Mimikatza. Analiza pliku `C:\Program Files (x86)\ossec-agent\active-response\active-responses.log` ujawniła błąd: `Cannot read 'srcip' from data`.
 * **Przyczyna:** Alerty pochodzące z Sysmona (Event ID 1 / Event ID 11) reprezentują lokalne operacje na procesach i plikach, przez co w wygenerowanym obiekcie JSON nie posiadają pola `data.srcip`. Wbudowane binaria firewalli wymagają tego parametru do nałożenia reguły blokującej.
-* **Rozwiązanie:** Zmieniono wektor mitygacji z sieciowego na procesowo-plikowy (EDR). Opracowano dedykowany skrypt `kill-mimi.cmd` niewymagający parametru `srcip`, który bezpośrednio ubija złośliwy proces (`taskkill`) i usuwa pliki wykonywalne z dysku przy wsparciu PowerShell.
+* **Rozwiązanie:** Zmieniono wektor mitygacji z sieciowego na procesowo-plikowy (EDR). Opracowano skrypt `quarantine-mimi.py` niewymagający parametru `srcip`, który zatrzymuje złośliwy proces (`taskkill`) i przenosi plik do kwarantanny, zachowując dowód do dalszej analizy.
 
 ### 6. Błąd walidacji konfiguracji `ossec.conf` i awaria startu `wazuh-manager.service`
 * **Diagnoza:** Po dodaniu definicji Active Response dla systemu Windows próba restartu Managera zakończyła się błędem `Job for wazuh-manager.service failed because the control process exited with error code`.
 * **Przyczyna:** Inspekcja dziennika systemowego (`sudo journalctl -xeu wazuh-manager.service`) wykazała dwa błędy konfiguracyjne w pliku `/var/ossec/etc/ossec.conf`: użycie dyrektywy `<location>defined-agent</location>` bez wymaganego tagu `<agent_id>` oraz zduplikowanie bloku `<active-response>` dla reguły `100005` (pozostałość po wcześniejszym wywołaniu `netsh`).
-* **Rozwiązanie:** Usunięto zduplikowany blok XML, ujednolicono wywołanie do komendy `win_kill_mimi` oraz zmieniono lokalizację wykonania na `<location>local</location>` (co instruuje SIEM, aby wykonał skrypt na tym agencie, który wygenerował alert).
+* **Rozwiązanie:** Usunięto zduplikowany blok XML, ujednolicono wywołanie do komendy `quarantine_mimi` oraz zmieniono lokalizację wykonania na `<location>local</location>` (co instruuje SIEM, aby wykonał skrypt na tym agencie, który wygenerował alert).

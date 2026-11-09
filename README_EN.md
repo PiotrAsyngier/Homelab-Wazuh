@@ -36,7 +36,7 @@ graph TD
     LinuxTarget -->|"Telemetry (Port 1514/1515)"| WazuhSIEM
     WinTarget -->|"Sysmon Telemetry (Port 1514/1515)"| WazuhSIEM
     WazuhSIEM -.->|"Active Response: firewall-drop (iptables)"| LinuxTarget
-    WazuhSIEM -.->|"Active Response: kill-mimi.cmd (Taskkill + Cleanup)"| WinTarget
+    WazuhSIEM -.->|"Active Response: quarantine-mimi.cmd (Taskkill + Quarantine)"| WinTarget
 ```
 
 ### Component Specification:
@@ -57,13 +57,11 @@ This repository contains the core configuration files and custom scripts develop
 ```text
 ├── README.md                                  # Technical documentation and deployment report (PL)
 ├── README_EN.md                               # Technical documentation and deployment report (EN)
-├── configs/
-│   ├── local_rules.xml                        # Custom detection rules (ID 100002, ID 100005)
-│   ├── manager_active_response.conf           # Manager <command> and <active-response> definitions
-│   ├── linux_agent_ossec.conf                 # Linux agent journald log collection config
-│   └── windows_agent_sysmon.conf              # Windows agent Sysmon Operational channel integration
-└── scripts/
-    └── kill-mimi.cmd                          # Windows Active Response script (EDR remediation)
+├── local_rules.xml                            # Custom detection rules (ID 100002, ID 100005)
+├── manager-active-response.conf               # Manager <command> and <active-response> definitions
+├── windows_agent_sysmon.conf                  # Windows agent Sysmon Operational channel integration
+├── quarantine-mimi.py                         # Mimikatz artifact quarantine script
+└── quarantine-mimi.cmd                        # Windows Active Response launcher
 ```
 
 ---
@@ -184,44 +182,38 @@ To isolate credential dumping attempts from general Sysmon telemetry, a custom h
 ### 4. Automated Endpoint Remediation (Windows Active Response)
 Because Sysmon events (Event ID 1 / Event ID 11) represent local host operations and do not populate a `srcip` field in their JSON alert structure, default network-based Active Response scripts (such as `netsh` IP blocking) cannot be used (see *Troubleshooting Log – Issue 5*).
 
-Instead of network isolation, a host-based EDR remediation workflow was designed to directly neutralize the process and purge the binary from disk:
+Instead of network isolation, a host-based EDR remediation workflow was designed to directly neutralize the process and preserve the binary for forensic analysis:
 
-**A. Custom Execution Script on the Windows Endpoint (`C:\Program Files (x86)\ossec-agent\active-response\bin\kill-mimi.cmd`):**  
-The script forcefully terminates the `mimikatz.exe` process tree using `taskkill`, invokes PowerShell to recursively delete the staging directories/archives, and writes an audit entry to `active-responses.log`:
+**A. Custom Execution Script on the Windows Endpoint (`C:\Program Files (x86)\ossec-agent\active-response\bin\quarantine-mimi.py`):**
+The script reads the Active Response alert from standard input, forcefully terminates the Mimikatz process using `taskkill`, moves the indicated file to `C:\Quarantine` instead of deleting it, adds the `.locked` extension, calculates its SHA-256 hash, and writes an audit entry to `active-responses.log`. The `quarantine-mimi.cmd` launcher starts the Python script because the Windows agent executes Active Response scripts through executables or batch launchers:
 
-```bat
+```cmd
 @echo off
-setlocal enableDelayedExpansion
-
-:: Forcefully terminate the malicious Mimikatz process (and any child processes)
-taskkill /F /IM mimikatz.exe /T >nul 2>&1
-
-:: Purge Mimikatz files/directories from Downloads and Temp folders via PowerShell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path 'C:\Users\*\Downloads\*mimikatz*', 'C:\Temp\*mimikatz*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
-
-:: Record remediation execution in the agent Active Response log
-echo %date% %time% Active Response [win_kill_mimi]: Terminated process and purged Mimikatz files (Rule 100005) >> "C:\Program Files (x86)\ossec-agent\active-response\active-responses.log"
-
-exit /b 0
+setlocal
+set "SCRIPT_DIR=%~dp0"
+if defined WAZUH_PYTHON set "PYTHON=%WAZUH_PYTHON%"
+if not defined PYTHON set "PYTHON=py.exe"
+"%PYTHON%" "%SCRIPT_DIR%quarantine-mimi.py"
+exit /b %ERRORLEVEL%
 ```
 
 **B. Trigger Configuration on the Wazuh Manager (`/var/ossec/etc/ossec.conf`):**
 
 ```xml
 <command>
-  <name>win_kill_mimi</name>
-  <executable>kill-mimi.cmd</executable>
+  <name>quarantine_mimi</name>
+  <executable>quarantine-mimi.cmd</executable>
   <timeout_allowed>no</timeout_allowed>
 </command>
 
 <active-response>
   <disabled>no</disabled>
-  <command>win_kill_mimi</command>
+  <command>quarantine_mimi</command>
   <location>local</location>
   <rules_id>100005</rules_id>
 </active-response>
 ```
-Whenever rule `100005` is triggered, the Wazuh Manager instructs the Windows agent (`<location>local</location>`) to execute `win_kill_mimi`, terminating the process and removing the payload in real time.
+Whenever rule `100005` is triggered, the Wazuh Manager instructs the Windows agent (`<location>local</location>`) to execute `quarantine_mimi`, terminating the process and preserving the payload in quarantine for forensic analysis.
 
 ---
 
@@ -258,9 +250,9 @@ Building the infrastructure from scratch involved diagnosing and resolving sever
 ### 5. Default Network Active Response Scripts Failing on Windows (`Cannot read 'srcip' from data`)
 * **Diagnosis:** The initial Active Response design for Windows attempted to use the built-in `netsh.exe` script to block network traffic upon detecting Mimikatz. Reviewing `C:\Program Files (x86)\ossec-agent\active-response\active-responses.log` revealed the error: `Cannot read 'srcip' from data`.
 * **Root Cause:** Sysmon alerts (Event ID 1 / Event ID 11) represent local process and file operations; consequently, their JSON alert payload does not contain a `data.srcip` field, which built-in firewall scripts require.
-* **Resolution:** Pivoted the mitigation strategy from network-based blocking to host-based EDR process/file remediation. Engineered a custom `kill-mimi.cmd` script that does not depend on `srcip`, using `taskkill` and PowerShell to terminate the process and delete the malicious files.
+* **Resolution:** Pivoted the mitigation strategy from network-based blocking to host-based EDR process/file remediation. Engineered `quarantine-mimi.py`, which does not depend on `srcip`, uses `taskkill` to terminate the process, and moves the malicious file to quarantine instead of deleting forensic evidence.
 
 ### 6. Manager Configuration Validation Failure (`wazuh-manager.service` Crash)
 * **Diagnosis:** After adding the Windows Active Response configuration, restarting the Wazuh Manager failed with `Job for wazuh-manager.service failed because the control process exited with error code`.
 * **Root Cause:** Inspecting `sudo journalctl -xeu wazuh-manager.service` uncovered two XML configuration issues in `/var/ossec/etc/ossec.conf`: setting `<location>defined-agent</location>` without specifying a corresponding `<agent_id>`, and leaving a duplicate `<active-response>` block referencing `netsh` for rule `100005`.
-* **Resolution:** Removed the duplicate XML block, unified the command reference to `win_kill_mimi`, and set `<location>local</location>` (instructing the SIEM to execute the remediation script directly on whichever agent generated the alert).
+* **Resolution:** Removed the duplicate XML block, unified the command reference to `quarantine_mimi`, and set `<location>local</location>` (instructing the SIEM to execute the remediation script directly on whichever agent generated the alert).
