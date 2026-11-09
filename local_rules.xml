@@ -8,12 +8,39 @@
     </mitre>
   </rule>
 </group>
-<group name="windows, sysmon, mimikatz,">
-  <rule id="100005" level="12">
-    <if_sid>92213, 92203</if_sid>
-    <description>Wykryto zlosliwa aktywnosc Powershell / tworzenie podejrzanego pliku (Mozliwy atak Credential Dumping)</description>
+
+<group name="windows,sysmon,mimikatz_behavior,">
+
+  <!-- Mimikatz v1: Naiwna detekcja po nazwie pliku (łatwa do ominięcia) -->
+  <rule id="100005" level="8">
+    <if_group>sysmon</if_group>
+    <field name="win.eventdata.image">(?i)mimikatz\.exe</field>
+    <description>EDR Alert: Wykryto Mimikatz po nazwie pliku (v1)</description>
+  </rule>
+
+  <!-- Mimikatz v2a: Detekcja po wbudowanych metadanych (Event ID 1) -->
+  <rule id="100006" level="12">
+    <if_group>sysmon</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <!-- Atakujący zmienił nazwę na updater.exe, ale OriginalFileName wciąż zdradza Mimikatza -->
+    <field name="win.eventdata.originalFileName">(?i)mimikatz\.exe</field>
+    <description>EDR Alert: Wykryto Mimikatz na podstawie metadanych OriginalFileName (Defense Evasion)</description>
     <mitre>
-      <id>T1003</id>
+      <id>T1036.003</id>
     </mitre>
   </rule>
+
+  <!-- Mimikatz v2b: Detekcja behawioralna - Zrzut pamięci LSASS (Event ID 10) -->
+  <rule id="100007" level="14">
+    <if_group>sysmon</if_group>
+    <field name="win.system.eventID">^10$</field>
+    <field name="win.eventdata.targetImage">(?i)lsass\.exe</field>
+    <!-- Maska 0x1010 lub 0x1410 jest typowa dla narzędzi czytających pamięć poświadczeń -->
+    <field name="win.eventdata.grantedAccess">^0x1010$|^0x1410$</field>
+    <description>CRITICAL EDR ALERT: Podejrzany dostęp do pamięci LSASS (Możliwy Credential Dumping)</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+  </rule>
+
 </group>
